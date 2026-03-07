@@ -9,6 +9,7 @@
 #   3) 若提供 DeepSeek API Key，则自动接入 DeepSeek 自定义 provider 并切为默认模型
 #   4) 默认把本机 loopback 认证设为 none，优先保证手机本机先跑通
 #   5) 提供一键开启 token 认证的辅助脚本，适合后续电脑/平板接入
+#   6) 内置 Android/PRoot 下常见 uv_interface_addresses Error 13 网络接口兼容修复
 # ==========================================================
 
 set -euo pipefail
@@ -129,7 +130,43 @@ run_openclawx_setup() {
 
 ubuntu_run() {
   local cmd="$1"
-  proot-distro login ubuntu --shared-tmp -- /bin/bash -lc "$cmd"
+  local cmd_b64
+  cmd_b64="$(printf '%s' "$cmd" | base64 | tr -d '
+')"
+  CMD_B64="$cmd_b64" proot-distro login ubuntu --shared-tmp -- /bin/bash -lc '
+set -euo pipefail
+FIX_ENV="$HOME/.openclaw/android_network_fix.sh"
+if [ -f "$FIX_ENV" ]; then
+  . "$FIX_ENV"
+fi
+printf "%s" "$CMD_B64" | base64 -d | /bin/bash
+'
+}
+
+install_android_network_fix() {
+  info "写入 Android / PRoot 网络接口兼容修复（规避 uv_interface_addresses Error 13）……"
+  proot-distro login ubuntu --shared-tmp -- /bin/bash -lc '
+set -euo pipefail
+mkdir -p ~/.openclaw
+cat > ~/.openclaw/uv_interface_addresses_fix.js <<"EOF_JS"
+const os = require("os");
+os.networkInterfaces = () => ({
+  lo: [{
+    address: "127.0.0.1",
+    netmask: "255.0.0.0",
+    family: "IPv4",
+    internal: true,
+    cidr: "127.0.0.1/8",
+    mac: "00:00:00:00:00:00"
+  }]
+});
+EOF_JS
+cat > ~/.openclaw/android_network_fix.sh <<"EOF_SH"
+export NODE_OPTIONS="--require=$HOME/.openclaw/uv_interface_addresses_fix.js${NODE_OPTIONS:+ $NODE_OPTIONS}"
+EOF_SH
+chmod 600 ~/.openclaw/android_network_fix.sh ~/.openclaw/uv_interface_addresses_fix.js
+'
+  success "已写入 Android 网络接口兼容修复。"
 }
 
 prepare_env_file() {
@@ -257,6 +294,8 @@ if [ -z "$OPENCLAW_BIN" ] && [ -x "$HOME/.openclaw/bin/openclaw" ]; then
   OPENCLAW_BIN="$HOME/.openclaw/bin/openclaw"
 fi
 [ -n "$OPENCLAW_BIN" ] || { echo "未找到 openclaw 主程序。"; exit 1; }
+FIX_ENV="$HOME/.openclaw/android_network_fix.sh"
+[ -f "$FIX_ENV" ] && . "$FIX_ENV"
 set -a
 [ -f ~/.openclaw/.env ] && . ~/.openclaw/.env
 set +a
@@ -316,6 +355,8 @@ if [ -z "$OPENCLAW_BIN" ] && [ -x "$HOME/.openclaw/bin/openclaw" ]; then
   OPENCLAW_BIN="$HOME/.openclaw/bin/openclaw"
 fi
 [ -n "$OPENCLAW_BIN" ] || { echo "未找到 openclaw 主程序。"; exit 1; }
+FIX_ENV="$HOME/.openclaw/android_network_fix.sh"
+[ -f "$FIX_ENV" ] && . "$FIX_ENV"
 "$OPENCLAW_BIN" config set gateway.auth.mode token
 "$OPENCLAW_BIN" config set gateway.auth.token "${OPENCLAW_GATEWAY_TOKEN}"
 "$OPENCLAW_BIN" config validate
@@ -339,6 +380,8 @@ if [ -z "$OPENCLAW_BIN" ] && [ -x "$HOME/.openclaw/bin/openclaw" ]; then
   OPENCLAW_BIN="$HOME/.openclaw/bin/openclaw"
 fi
 [ -n "$OPENCLAW_BIN" ] || { echo "未找到 openclaw 主程序。"; exit 1; }
+FIX_ENV="$HOME/.openclaw/android_network_fix.sh"
+[ -f "$FIX_ENV" ] && . "$FIX_ENV"
 "$OPENCLAW_BIN" config set gateway.auth.mode none
 "$OPENCLAW_BIN" config validate
 '
@@ -358,6 +401,8 @@ if [ -z "$OPENCLAW_BIN" ] && [ -x "$HOME/.openclaw/bin/openclaw" ]; then
   OPENCLAW_BIN="$HOME/.openclaw/bin/openclaw"
 fi
 [ -n "$OPENCLAW_BIN" ] || { echo "未找到 openclaw 主程序。"; exit 1; }
+FIX_ENV="$HOME/.openclaw/android_network_fix.sh"
+[ -f "$FIX_ENV" ] && . "$FIX_ENV"
 set -a
 [ -f ~/.openclaw/.env ] && . ~/.openclaw/.env
 set +a
@@ -385,6 +430,10 @@ if [ -z "$OPENCLAW_BIN" ] && [ -x "$HOME/.openclaw/bin/openclaw" ]; then
   OPENCLAW_BIN="$HOME/.openclaw/bin/openclaw"
 fi
 [ -n "$OPENCLAW_BIN" ] || { echo "未找到 openclaw 主程序。"; exit 1; }
+FIX_ENV="$HOME/.openclaw/android_network_fix.sh"
+[ -f "$FIX_ENV" ] && . "$FIX_ENV"
+FIX_ENV="$HOME/.openclaw/android_network_fix.sh"
+[ -f "$FIX_ENV" ] && . "$FIX_ENV"
 set -a
 [ -f ~/.openclaw/.env ] && . ~/.openclaw/.env
 set +a
@@ -401,6 +450,36 @@ set +a
 echo "本地初始化已修复。现在可以运行：openclawx start"
 EOF_HELPER
   chmod +x "${HELPER_DIR}/修复本地初始化.sh"
+}
+
+create_network_fix_helper() {
+  cat > "${HELPER_DIR}/修复Error13网络接口.sh" <<'EOF_HELPER'
+#!/data/data/com.termux/files/usr/bin/bash
+set -euo pipefail
+proot-distro login ubuntu --shared-tmp -- /bin/bash -lc '
+set -euo pipefail
+mkdir -p ~/.openclaw
+cat > ~/.openclaw/uv_interface_addresses_fix.js <<"EOF_JS"
+const os = require("os");
+os.networkInterfaces = () => ({
+  lo: [{
+    address: "127.0.0.1",
+    netmask: "255.0.0.0",
+    family: "IPv4",
+    internal: true,
+    cidr: "127.0.0.1/8",
+    mac: "00:00:00:00:00:00"
+  }]
+});
+EOF_JS
+cat > ~/.openclaw/android_network_fix.sh <<"EOF_SH"
+export NODE_OPTIONS="--require=$HOME/.openclaw/uv_interface_addresses_fix.js${NODE_OPTIONS:+ $NODE_OPTIONS}"
+EOF_SH
+chmod 600 ~/.openclaw/android_network_fix.sh ~/.openclaw/uv_interface_addresses_fix.js
+'
+echo "Android / PRoot 网络接口修复已重新写入。现在可重新运行：openclawx start"
+EOF_HELPER
+  chmod +x "${HELPER_DIR}/修复Error13网络接口.sh"
 }
 
 create_helper_files() {
@@ -425,6 +504,7 @@ EOF_HELPER
   create_disable_token_helper
   create_dashboard_helper
   create_repair_helper
+  create_network_fix_helper
 
   cat > "${DOCS_DIR}/01-安装完成后先看我.txt" <<EOF_README
 OpenClaw Termux DeepSeek 中文说明
@@ -438,6 +518,7 @@ OpenClaw Termux DeepSeek 中文说明
 5. 开启 token 认证：bash ~/openclaw-helper/开启Token认证.sh
 6. 关闭 token 认证：bash ~/openclaw-helper/关闭Token认证.sh
 7. 修复本地初始化：bash ~/openclaw-helper/修复本地初始化.sh
+8. 修复 Error 13 网络接口：bash ~/openclaw-helper/修复Error13网络接口.sh
 
 二、本机访问地址
 http://127.0.0.1:18789/
@@ -455,8 +536,9 @@ ${LOCAL_AUTH_MODE}
 2. 即使跳过 API Key，脚本也会先写好本地 Gateway 基础配置，不会再卡在 Missing config
 3. 如果手机后台容易被杀，请把 Termux 的电池优化设为“不受限制”
 4. 如果网页仍然异常，优先运行：bash ~/openclaw-helper/修复本地初始化.sh
-5. 如果浏览器之前填错过 token，请清掉 127.0.0.1:18789 的站点数据或改用无痕模式
-6. 本中文脚本版权：黑客驰 / hackerchi.top
+5. 如果启动时看到 uv_interface_addresses / Unknown system error 13，可运行：bash ~/openclaw-helper/修复Error13网络接口.sh
+6. 如果浏览器之前填错过 token，请清掉 127.0.0.1:18789 的站点数据或改用无痕模式
+7. 本中文脚本版权：黑客驰 / hackerchi.top
 EOF_README
 }
 
@@ -491,6 +573,7 @@ final_summary() {
   echo "帮助目录：${HELPER_DIR}"
   echo "说明目录：${DOCS_DIR}"
   echo "如需电脑/平板接入：bash ~/openclaw-helper/开启Token认证.sh"
+  echo "如遇 Error 13：bash ~/openclaw-helper/修复Error13网络接口.sh"
   echo "封装版权：黑客驰 / hackerchi.top"
 }
 
@@ -503,6 +586,7 @@ main() {
   configure_npm_registry
   install_openclaw_termux
   run_openclawx_setup
+  install_android_network_fix
   prepare_env_file
   copy_env_into_ubuntu
   configure_ubuntu_npm
