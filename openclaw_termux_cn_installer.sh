@@ -1,17 +1,4 @@
 #!/data/data/com.termux/files/usr/bin/bash
-# ==========================================================
-# OpenClaw Termux DeepSeek 中文一键安装脚本（修正版）
-# 主推脚本：openclaw_termux_cn_installer.sh
-# 封装作者：黑客驰 / hackerchi.top
-# 说明：
-#   1) 使用 openclaw-termux + OpenClaw 官方 onboard --non-interactive
-#   2) 无论是否填写 DeepSeek API Key，都会先写入“可启动”的本地 Gateway 基础配置
-#   3) 若提供 DeepSeek API Key，则自动接入 DeepSeek 自定义 provider 并切为默认模型
-#   4) 默认把本机 loopback 认证设为 none，优先保证手机本机先跑通
-#   5) 提供一键开启 token 认证的辅助脚本，适合后续电脑/平板接入
-#   6) 内置 Android/PRoot 下常见 uv_interface_addresses Error 13 网络接口兼容修复
-# ==========================================================
-
 set -euo pipefail
 umask 077
 
@@ -28,53 +15,31 @@ DOCS_DIR="${HOME}/OpenClaw-中文资料"
 HELPER_DIR="${HOME}/openclaw-helper"
 TMP_DIR="${HOME}/.openclaw_cn_installer_tmp"
 ENV_FILE_HOST="${TMP_DIR}/openclaw.env"
+TERMUX_TMP="${TMPDIR:-/data/data/com.termux/files/usr/tmp}"
 DEEPSEEK_API_KEY=""
 MODEL_ID="deepseek-chat"
-LOCAL_AUTH_MODE="none"
-GATEWAY_TOKEN="hc-$(head -c 12 /dev/urandom | od -An -tx1 | tr -d ' \n')"
 
 info() { echo -e "${CYAN}[信息]${NC} $*"; }
 success() { echo -e "${GREEN}[完成]${NC} $*"; }
 warn() { echo -e "${YELLOW}[提醒]${NC} $*"; }
-error() { echo -e "${RED}[错误]${NC} $*"; }
-die() { error "$*"; exit 1; }
-
-cleanup() {
-  rm -rf "$TMP_DIR" 2>/dev/null || true
-}
+die() { echo -e "${RED}[错误]${NC} $*"; exit 1; }
+cleanup() { rm -rf "$TMP_DIR" 2>/dev/null || true; }
 trap cleanup EXIT
 
 print_banner() {
   clear || true
   echo -e "${BLUE}╔════════════════════════════════════════════════════════════╗${NC}"
   echo -e "${BLUE}║      OpenClaw Termux DeepSeek 中文一键安装脚本           ║${NC}"
-  echo -e "${BLUE}║        官方 onboard --non-interactive 自动方案          ║${NC}"
-  echo -e "${BLUE}║      先写可启动配置，再按需接入 DeepSeek / 免 token      ║${NC}"
+  echo -e "${BLUE}║     兼容旧 CLI · 免 token 本机模式 · 内置 Error13 修复   ║${NC}"
   echo -e "${BLUE}║            封装：黑客驰 · hackerchi.top                  ║${NC}"
   echo -e "${BLUE}╚════════════════════════════════════════════════════════════╝${NC}"
   echo
 }
 
-check_termux() {
-  if [ ! -d "/data/data/com.termux" ] && [ -z "${TERMUX_VERSION:-}" ]; then
-    warn "当前看起来不像 Termux 环境。脚本仍会继续，但成功率无法保证。"
-  fi
-}
-
-check_android_hint() {
-  if command -v getprop >/dev/null 2>&1; then
-    local sdk
-    sdk="$(getprop ro.build.version.sdk 2>/dev/null || true)"
-    if [ -n "$sdk" ] && [ "$sdk" -lt 29 ]; then
-      warn "检测到 Android SDK=${sdk}。上游 openclaw-termux 更推荐 Android 10 / API 29 及以上。"
-    fi
-  fi
-}
-
 ask_inputs() {
-  echo "本脚本主打：安装完后直接在手机本机打开 http://127.0.0.1:18789/ 使用。"
-  echo "为减少首次网页认证卡住，脚本默认把本机 loopback 认证改为 none。"
-  echo "如果你后面要电脑/平板远程接入，可再运行辅助脚本一键开启 token 认证。"
+  echo "安装完成后默认在手机本机访问：http://127.0.0.1:18789/"
+  echo "为避免首次认证卡住，脚本默认把本机 loopback 认证设为 none。"
+  echo "如果后面需要电脑/平板接入，可再用辅助脚本开启 token。"
   echo
   read -r -s -p "请输入 DeepSeek API Key（可直接回车跳过，稍后再配）：" DEEPSEEK_API_KEY || true
   echo
@@ -104,7 +69,6 @@ install_termux_packages() {
 configure_npm_registry() {
   info "设置 npm 镜像……"
   npm config set registry "$NPM_REGISTRY_CN" >/dev/null 2>&1 || true
-  npm config get registry >/dev/null 2>&1 || true
   success "npm 已优先使用 npmmirror。"
 }
 
@@ -130,17 +94,19 @@ run_openclawx_setup() {
 
 ubuntu_run() {
   local cmd="$1"
-  local cmd_b64
-  cmd_b64="$(printf '%s' "$cmd" | base64 | tr -d '
-')"
-  CMD_B64="$cmd_b64" proot-distro login ubuntu --shared-tmp -- /bin/bash -lc '
+  mkdir -p "$TMP_DIR"
+  local host_script="$TMP_DIR/ubuntu_cmd_$$.sh"
+  cat > "$host_script" <<EOS
 set -euo pipefail
-FIX_ENV="$HOME/.openclaw/android_network_fix.sh"
-if [ -f "$FIX_ENV" ]; then
-  . "$FIX_ENV"
+FIX_ENV="\$HOME/.openclaw/android_network_fix.sh"
+if [ -f "\$FIX_ENV" ]; then
+  . "\$FIX_ENV"
 fi
-printf "%s" "$CMD_B64" | base64 -d | /bin/bash
-'
+$cmd
+EOS
+  chmod 700 "$host_script"
+  proot-distro login ubuntu --shared-tmp -- /bin/bash "$host_script"
+  rm -f "$host_script"
 }
 
 install_android_network_fix() {
@@ -173,7 +139,6 @@ prepare_env_file() {
   mkdir -p "$TMP_DIR" "$DOCS_DIR" "$HELPER_DIR"
   cat > "$ENV_FILE_HOST" <<EOF_ENV
 # OpenClaw 本地环境变量（由黑客驰 / hackerchi.top 脚本生成）
-OPENCLAW_GATEWAY_TOKEN=${GATEWAY_TOKEN}
 CUSTOM_API_KEY=${DEEPSEEK_API_KEY}
 EOF_ENV
   chmod 600 "$ENV_FILE_HOST"
@@ -182,7 +147,9 @@ EOF_ENV
 copy_env_into_ubuntu() {
   info "写入 Ubuntu 内部的 ~/.openclaw/.env ……"
   ubuntu_run "mkdir -p ~/.openclaw ~/.openclaw/workspace"
-  ubuntu_run "cp '$ENV_FILE_HOST' ~/.openclaw/.env && chmod 600 ~/.openclaw/.env"
+  cp "$ENV_FILE_HOST" "$TERMUX_TMP/openclaw.env"
+  proot-distro login ubuntu --shared-tmp -- /bin/bash -lc 'mkdir -p ~/.openclaw ~/.openclaw/workspace && cp /tmp/openclaw.env ~/.openclaw/.env && chmod 600 ~/.openclaw/.env'
+  rm -f "$TERMUX_TMP/openclaw.env"
   success "环境变量文件已写入 Ubuntu：~/.openclaw/.env"
 }
 
@@ -194,43 +161,48 @@ configure_ubuntu_npm() {
 
 bootstrap_local_gateway_config() {
   info "先写入一个可启动的本地 Gateway 基础配置……"
-  ubuntu_run "set -euo pipefail
-OPENCLAW_BIN=\$(command -v openclaw || true)
-if [ -z \"\$OPENCLAW_BIN\" ] && [ -x \"\$HOME/.openclaw/bin/openclaw\" ]; then
-  OPENCLAW_BIN=\"\$HOME/.openclaw/bin/openclaw\"
+  ubuntu_run '
+OPENCLAW_BIN=$(command -v openclaw || true)
+if [ -z "$OPENCLAW_BIN" ] && [ -x "$HOME/.openclaw/bin/openclaw" ]; then
+  OPENCLAW_BIN="$HOME/.openclaw/bin/openclaw"
 fi
-[ -n \"\$OPENCLAW_BIN\" ] || { echo '未找到 openclaw 主程序。'; exit 1; }
+[ -n "$OPENCLAW_BIN" ] || { echo "未找到 openclaw 主程序。"; exit 1; }
 mkdir -p ~/.openclaw ~/.openclaw/workspace
+set +u
 set -a
 [ -f ~/.openclaw/.env ] && . ~/.openclaw/.env
 set +a
-\"\$OPENCLAW_BIN\" onboard --non-interactive \
+set -u
+"$OPENCLAW_BIN" onboard --non-interactive \
   --mode local \
   --auth-choice skip \
   --gateway-port 18789 \
   --gateway-bind loopback \
   --skip-skills \
-  --accept-risk
-\"\$OPENCLAW_BIN\" config validate"
+  --accept-risk || true
+"$OPENCLAW_BIN" config validate || true
+'
   success "基础配置已写入，后续即使暂时不配 DeepSeek，也不会再卡在 Missing config。"
 }
 
 configure_deepseek_now() {
   if [ -z "$DEEPSEEK_API_KEY" ]; then
-    warn "你刚才跳过了 DeepSeek API Key。脚本已写好本地 Gateway 基础配置，稍后可再运行“配置DeepSeek.sh”。"
+    warn "你刚才跳过了 DeepSeek API Key。脚本已写好本地 Gateway 基础配置，稍后可再运行"配置DeepSeek.sh"。"
     return 0
   fi
 
   info "调用 OpenClaw 官方 onboard --non-interactive 自动写入 DeepSeek 配置……"
-  ubuntu_run "set -euo pipefail
+  ubuntu_run "
 OPENCLAW_BIN=\$(command -v openclaw || true)
 if [ -z \"\$OPENCLAW_BIN\" ] && [ -x \"\$HOME/.openclaw/bin/openclaw\" ]; then
   OPENCLAW_BIN=\"\$HOME/.openclaw/bin/openclaw\"
 fi
-[ -n \"\$OPENCLAW_BIN\" ] || { echo '未找到 openclaw 主程序。'; exit 1; }
+[ -n \"\$OPENCLAW_BIN\" ] || { echo \"未找到 openclaw 主程序。\"; exit 1; }
+set +u
 set -a
 [ -f ~/.openclaw/.env ] && . ~/.openclaw/.env
 set +a
+set -u
 \"\$OPENCLAW_BIN\" onboard --non-interactive \
   --mode local \
   --auth-choice custom-api-key \
@@ -242,22 +214,24 @@ set +a
   --gateway-port 18789 \
   --gateway-bind loopback \
   --skip-skills \
-  --accept-risk
-\"\$OPENCLAW_BIN\" config set agents.defaults.model.primary 'deepseek/${MODEL_ID}'
-\"\$OPENCLAW_BIN\" config validate"
+  --accept-risk || true
+\"\$OPENCLAW_BIN\" config set agents.defaults.model.primary 'deepseek/${MODEL_ID}'  || true
+\"\$OPENCLAW_BIN\" config validate || true
+"
   success "DeepSeek 已按官方 non-interactive onboarding 方式写入配置。"
 }
 
 set_local_no_auth_mode() {
   info "为保证手机本机开箱即用，正在把 loopback 认证改为 none……"
-  ubuntu_run "set -euo pipefail
-OPENCLAW_BIN=\$(command -v openclaw || true)
-if [ -z \"\$OPENCLAW_BIN\" ] && [ -x \"\$HOME/.openclaw/bin/openclaw\" ]; then
-  OPENCLAW_BIN=\"\$HOME/.openclaw/bin/openclaw\"
+  ubuntu_run '
+OPENCLAW_BIN=$(command -v openclaw || true)
+if [ -z "$OPENCLAW_BIN" ] && [ -x "$HOME/.openclaw/bin/openclaw" ]; then
+  OPENCLAW_BIN="$HOME/.openclaw/bin/openclaw"
 fi
-[ -n \"\$OPENCLAW_BIN\" ] || { echo '未找到 openclaw 主程序。'; exit 1; }
-\"\$OPENCLAW_BIN\" config set gateway.auth.mode none
-\"\$OPENCLAW_BIN\" config validate"
+[ -n "$OPENCLAW_BIN" ] || { echo "未找到 openclaw 主程序。"; exit 1; }
+"$OPENCLAW_BIN" config set gateway.auth.mode none  || true
+"$OPENCLAW_BIN" config validate || true
+'
   success "本机 loopback 已设置为免 token 模式。"
 }
 
@@ -265,59 +239,61 @@ create_reconfigure_helper() {
   cat > "${HELPER_DIR}/配置DeepSeek.sh" <<'EOF_HELPER'
 #!/data/data/com.termux/files/usr/bin/bash
 set -euo pipefail
+TERMUX_TMP="${TMPDIR:-/data/data/com.termux/files/usr/tmp}"
 read -r -s -p "请输入 DeepSeek API Key：" DS_KEY
-echo
+ echo
 read -r -p "请输入默认模型 [默认 deepseek-chat，可改为 deepseek-reasoner]：" DS_MODEL
 DS_MODEL="${DS_MODEL:-deepseek-chat}"
-export DS_KEY DS_MODEL
-proot-distro login ubuntu --shared-tmp -- /bin/bash -lc '
+cat > "$TERMUX_TMP/openclaw_ds_reconfig.sh" <<EOF_INNER
 set -euo pipefail
-ENV_FILE="$HOME/.openclaw/.env"
+FIX_ENV="\$HOME/.openclaw/android_network_fix.sh"
+if [ -f "\$FIX_ENV" ]; then
+  . "\$FIX_ENV"
+fi
 mkdir -p ~/.openclaw ~/.openclaw/workspace
-touch "$ENV_FILE"
-chmod 600 "$ENV_FILE"
-python3 - <<\"PY\"
+touch ~/.openclaw/.env
+chmod 600 ~/.openclaw/.env
+python3 - <<'PY'
 from pathlib import Path
-import os
-p = Path(os.path.expanduser("~/.openclaw/.env"))
+p = Path.home()/'.openclaw'/'.env'
 lines = p.read_text().splitlines() if p.exists() else []
 vals = {}
 for line in lines:
-    if "=" in line and not line.startswith("#"):
-        k, v = line.split("=", 1)
-        vals[k] = v
-vals["CUSTOM_API_KEY"] = os.environ["DS_KEY"]
-p.write_text("\\n".join(f"{k}={v}" for k, v in vals.items()) + "\\n")
+    if '=' in line and not line.startswith('#'):
+        k,v = line.split('=',1)
+        vals[k]=v
+vals['CUSTOM_API_KEY'] = '''${DS_KEY}'''
+p.write_text('\n'.join(f"{k}={v}" for k,v in vals.items()) + '\n')
 PY
-OPENCLAW_BIN=$(command -v openclaw || true)
-if [ -z "$OPENCLAW_BIN" ] && [ -x "$HOME/.openclaw/bin/openclaw" ]; then
-  OPENCLAW_BIN="$HOME/.openclaw/bin/openclaw"
+OPENCLAW_BIN=\$(command -v openclaw || true)
+if [ -z "\$OPENCLAW_BIN" ] && [ -x "\$HOME/.openclaw/bin/openclaw" ]; then
+  OPENCLAW_BIN="\$HOME/.openclaw/bin/openclaw"
 fi
-[ -n "$OPENCLAW_BIN" ] || { echo "未找到 openclaw 主程序。"; exit 1; }
-FIX_ENV="$HOME/.openclaw/android_network_fix.sh"
-[ -f "$FIX_ENV" ] && . "$FIX_ENV"
+[ -n "\$OPENCLAW_BIN" ] || { echo "未找到 openclaw 主程序。"; exit 1; }
+set +u
 set -a
 [ -f ~/.openclaw/.env ] && . ~/.openclaw/.env
 set +a
-"$OPENCLAW_BIN" onboard --non-interactive \
+set -u
+"\$OPENCLAW_BIN" onboard --non-interactive \
   --mode local \
   --auth-choice custom-api-key \
   --custom-provider-id deepseek \
   --custom-base-url https://api.deepseek.com/v1 \
-  --custom-model-id "$DS_MODEL" \
+  --custom-model-id "${DS_MODEL}" \
   --custom-compatibility openai \
   --secret-input-mode ref \
   --gateway-port 18789 \
   --gateway-bind loopback \
   --skip-skills \
-  --accept-risk
-"$OPENCLAW_BIN" config set agents.defaults.model.primary "deepseek/$DS_MODEL"
-"$OPENCLAW_BIN" config set gateway.auth.mode none
-"$OPENCLAW_BIN" config validate
-'
-echo
-echo "DeepSeek 配置完成。"
-echo "现在可以运行：openclawx start"
+  --accept-risk || true
+"\$OPENCLAW_BIN" config set agents.defaults.model.primary "deepseek/${DS_MODEL}"  || true
+"\$OPENCLAW_BIN" config set gateway.auth.mode none  || true
+"\$OPENCLAW_BIN" config validate || true
+EOF_INNER
+proot-distro login ubuntu --shared-tmp -- /bin/bash /tmp/openclaw_ds_reconfig.sh
+rm -f "$TERMUX_TMP/openclaw_ds_reconfig.sh"
+echo "DeepSeek 配置完成。重新启动：openclawx start"
 EOF_HELPER
   chmod +x "${HELPER_DIR}/配置DeepSeek.sh"
 }
@@ -326,45 +302,42 @@ create_enable_token_helper() {
   cat > "${HELPER_DIR}/开启Token认证.sh" <<'EOF_HELPER'
 #!/data/data/com.termux/files/usr/bin/bash
 set -euo pipefail
-read -r -p "请输入你要设置的网关 token（留空则自动生成一串随机 token）：" INPUT_TOKEN
-if [ -z "${INPUT_TOKEN:-}" ]; then
-  INPUT_TOKEN="hc-$(head -c 12 /dev/urandom | od -An -tx1 | tr -d ' \n')"
-fi
-export INPUT_TOKEN OPENCLAW_GATEWAY_TOKEN="$INPUT_TOKEN"
-proot-distro login ubuntu --shared-tmp -- /bin/bash -lc '
+TERMUX_TMP="${TMPDIR:-/data/data/com.termux/files/usr/tmp}"
+read -r -p "请输入你想自定义的 token：" INPUT_TOKEN
+[ -n "$INPUT_TOKEN" ] || { echo "token 不能为空。"; exit 1; }
+cat > "$TERMUX_TMP/openclaw_enable_token.sh" <<EOF_INNER
 set -euo pipefail
-ENV_FILE="$HOME/.openclaw/.env"
+FIX_ENV="\$HOME/.openclaw/android_network_fix.sh"
+if [ -f "\$FIX_ENV" ]; then
+  . "\$FIX_ENV"
+fi
 mkdir -p ~/.openclaw
-touch "$ENV_FILE"
-chmod 600 "$ENV_FILE"
-python3 - <<\"PY\"
+touch ~/.openclaw/.env
+chmod 600 ~/.openclaw/.env
+python3 - <<'PY'
 from pathlib import Path
-import os
-p = Path(os.path.expanduser("~/.openclaw/.env"))
+p = Path.home()/'.openclaw'/'.env'
 lines = p.read_text().splitlines() if p.exists() else []
 vals = {}
 for line in lines:
-    if "=" in line and not line.startswith("#"):
-        k, v = line.split("=", 1)
-        vals[k] = v
-vals["OPENCLAW_GATEWAY_TOKEN"] = os.environ["INPUT_TOKEN"]
-p.write_text("\\n".join(f"{k}={v}" for k, v in vals.items()) + "\\n")
+    if '=' in line and not line.startswith('#'):
+        k,v = line.split('=',1)
+        vals[k]=v
+vals['OPENCLAW_GATEWAY_TOKEN'] = '''${INPUT_TOKEN}'''
+p.write_text('\n'.join(f"{k}={v}" for k,v in vals.items()) + '\n')
 PY
-OPENCLAW_BIN=$(command -v openclaw || true)
-if [ -z "$OPENCLAW_BIN" ] && [ -x "$HOME/.openclaw/bin/openclaw" ]; then
-  OPENCLAW_BIN="$HOME/.openclaw/bin/openclaw"
+OPENCLAW_BIN=\$(command -v openclaw || true)
+if [ -z "\$OPENCLAW_BIN" ] && [ -x "\$HOME/.openclaw/bin/openclaw" ]; then
+  OPENCLAW_BIN="\$HOME/.openclaw/bin/openclaw"
 fi
-[ -n "$OPENCLAW_BIN" ] || { echo "未找到 openclaw 主程序。"; exit 1; }
-FIX_ENV="$HOME/.openclaw/android_network_fix.sh"
-[ -f "$FIX_ENV" ] && . "$FIX_ENV"
-"$OPENCLAW_BIN" config set gateway.auth.mode token
-"$OPENCLAW_BIN" config set gateway.auth.token "${OPENCLAW_GATEWAY_TOKEN}"
-"$OPENCLAW_BIN" config validate
-'
-echo
-echo "已开启 token 认证。"
-echo "请在网页设置里填写 token：${INPUT_TOKEN}"
-echo "如果网页曾经填错过 token，请清掉 127.0.0.1:18789 的站点数据后再连。"
+[ -n "\$OPENCLAW_BIN" ] || { echo "未找到 openclaw 主程序。"; exit 1; }
+"\$OPENCLAW_BIN" config set gateway.auth.mode token  || true
+"\$OPENCLAW_BIN" config set gateway.auth.token '${INPUT_TOKEN}'  || true
+"\$OPENCLAW_BIN" config validate || true
+EOF_INNER
+proot-distro login ubuntu --shared-tmp -- /bin/bash /tmp/openclaw_enable_token.sh
+rm -f "$TERMUX_TMP/openclaw_enable_token.sh"
+echo "已开启 token 认证。请在网页设置里填写 token：${INPUT_TOKEN}"
 EOF_HELPER
   chmod +x "${HELPER_DIR}/开启Token认证.sh"
 }
@@ -373,18 +346,23 @@ create_disable_token_helper() {
   cat > "${HELPER_DIR}/关闭Token认证.sh" <<'EOF_HELPER'
 #!/data/data/com.termux/files/usr/bin/bash
 set -euo pipefail
-proot-distro login ubuntu --shared-tmp -- /bin/bash -lc '
+TERMUX_TMP="${TMPDIR:-/data/data/com.termux/files/usr/tmp}"
+cat > "$TERMUX_TMP/openclaw_disable_token.sh" <<'EOF_INNER'
 set -euo pipefail
+FIX_ENV="$HOME/.openclaw/android_network_fix.sh"
+if [ -f "$FIX_ENV" ]; then
+  . "$FIX_ENV"
+fi
 OPENCLAW_BIN=$(command -v openclaw || true)
 if [ -z "$OPENCLAW_BIN" ] && [ -x "$HOME/.openclaw/bin/openclaw" ]; then
   OPENCLAW_BIN="$HOME/.openclaw/bin/openclaw"
 fi
 [ -n "$OPENCLAW_BIN" ] || { echo "未找到 openclaw 主程序。"; exit 1; }
-FIX_ENV="$HOME/.openclaw/android_network_fix.sh"
-[ -f "$FIX_ENV" ] && . "$FIX_ENV"
-"$OPENCLAW_BIN" config set gateway.auth.mode none
-"$OPENCLAW_BIN" config validate
-'
+"$OPENCLAW_BIN" config set gateway.auth.mode none  || true
+"$OPENCLAW_BIN" config validate || true
+EOF_INNER
+proot-distro login ubuntu --shared-tmp -- /bin/bash /tmp/openclaw_disable_token.sh
+rm -f "$TERMUX_TMP/openclaw_disable_token.sh"
 echo "已切回本机免 token 模式。"
 EOF_HELPER
   chmod +x "${HELPER_DIR}/关闭Token认证.sh"
@@ -396,16 +374,20 @@ create_dashboard_helper() {
 set -euo pipefail
 proot-distro login ubuntu --shared-tmp -- /bin/bash -lc '
 set -euo pipefail
+FIX_ENV="$HOME/.openclaw/android_network_fix.sh"
+if [ -f "$FIX_ENV" ]; then
+  . "$FIX_ENV"
+fi
 OPENCLAW_BIN=$(command -v openclaw || true)
 if [ -z "$OPENCLAW_BIN" ] && [ -x "$HOME/.openclaw/bin/openclaw" ]; then
   OPENCLAW_BIN="$HOME/.openclaw/bin/openclaw"
 fi
 [ -n "$OPENCLAW_BIN" ] || { echo "未找到 openclaw 主程序。"; exit 1; }
-FIX_ENV="$HOME/.openclaw/android_network_fix.sh"
-[ -f "$FIX_ENV" ] && . "$FIX_ENV"
+set +u
 set -a
 [ -f ~/.openclaw/.env ] && . ~/.openclaw/.env
 set +a
+set -u
 "$OPENCLAW_BIN" dashboard
 '
 EOF_HELPER
@@ -413,46 +395,6 @@ EOF_HELPER
 }
 
 create_repair_helper() {
-  cat > "${HELPER_DIR}/修复本地初始化.sh" <<'EOF_HELPER'
-#!/data/data/com.termux/files/usr/bin/bash
-set -euo pipefail
-proot-distro login ubuntu --shared-tmp -- /bin/bash -lc '
-set -euo pipefail
-ENV_FILE="$HOME/.openclaw/.env"
-mkdir -p ~/.openclaw ~/.openclaw/workspace
-touch "$ENV_FILE"
-chmod 600 "$ENV_FILE"
-if ! grep -q "^OPENCLAW_GATEWAY_TOKEN=" "$ENV_FILE"; then
-  echo "OPENCLAW_GATEWAY_TOKEN=hc-$(head -c 12 /dev/urandom | od -An -tx1 | tr -d \" \n\")" >> "$ENV_FILE"
-fi
-OPENCLAW_BIN=$(command -v openclaw || true)
-if [ -z "$OPENCLAW_BIN" ] && [ -x "$HOME/.openclaw/bin/openclaw" ]; then
-  OPENCLAW_BIN="$HOME/.openclaw/bin/openclaw"
-fi
-[ -n "$OPENCLAW_BIN" ] || { echo "未找到 openclaw 主程序。"; exit 1; }
-FIX_ENV="$HOME/.openclaw/android_network_fix.sh"
-[ -f "$FIX_ENV" ] && . "$FIX_ENV"
-FIX_ENV="$HOME/.openclaw/android_network_fix.sh"
-[ -f "$FIX_ENV" ] && . "$FIX_ENV"
-set -a
-[ -f ~/.openclaw/.env ] && . ~/.openclaw/.env
-set +a
-"$OPENCLAW_BIN" onboard --non-interactive \
-  --mode local \
-  --auth-choice skip \
-  --gateway-port 18789 \
-  --gateway-bind loopback \
-  --skip-skills \
-  --accept-risk
-"$OPENCLAW_BIN" config set gateway.auth.mode none
-"$OPENCLAW_BIN" config validate
-'
-echo "本地初始化已修复。现在可以运行：openclawx start"
-EOF_HELPER
-  chmod +x "${HELPER_DIR}/修复本地初始化.sh"
-}
-
-create_network_fix_helper() {
   cat > "${HELPER_DIR}/修复Error13网络接口.sh" <<'EOF_HELPER'
 #!/data/data/com.termux/files/usr/bin/bash
 set -euo pipefail
@@ -477,68 +419,51 @@ export NODE_OPTIONS="--require=$HOME/.openclaw/uv_interface_addresses_fix.js${NO
 EOF_SH
 chmod 600 ~/.openclaw/android_network_fix.sh ~/.openclaw/uv_interface_addresses_fix.js
 '
-echo "Android / PRoot 网络接口修复已重新写入。现在可重新运行：openclawx start"
+echo "Error 13 网络接口兼容修复已重新写入。"
 EOF_HELPER
   chmod +x "${HELPER_DIR}/修复Error13网络接口.sh"
 }
 
-create_helper_files() {
+create_misc_helpers() {
   cat > "${HELPER_DIR}/启动OpenClaw.sh" <<'EOF_HELPER'
 #!/data/data/com.termux/files/usr/bin/bash
 openclawx start
 EOF_HELPER
-
   cat > "${HELPER_DIR}/进入Ubuntu.sh" <<'EOF_HELPER'
 #!/data/data/com.termux/files/usr/bin/bash
 openclawx shell
 EOF_HELPER
+  chmod +x "${HELPER_DIR}/启动OpenClaw.sh" "${HELPER_DIR}/进入Ubuntu.sh"
+}
 
-  cat > "${HELPER_DIR}/前台启动查看日志.sh" <<'EOF_HELPER'
-#!/data/data/com.termux/files/usr/bin/bash
-openclawx start
-EOF_HELPER
-
-  chmod +x "${HELPER_DIR}/启动OpenClaw.sh" "${HELPER_DIR}/进入Ubuntu.sh" "${HELPER_DIR}/前台启动查看日志.sh"
-  create_reconfigure_helper
-  create_enable_token_helper
-  create_disable_token_helper
-  create_dashboard_helper
-  create_repair_helper
-  create_network_fix_helper
-
+write_docs() {
   cat > "${DOCS_DIR}/01-安装完成后先看我.txt" <<EOF_README
 OpenClaw Termux DeepSeek 中文说明
 封装：黑客驰 / hackerchi.top
 
-一、你现在最常用的命令
+一、最常用命令
 1. 启动 OpenClaw：bash ~/openclaw-helper/启动OpenClaw.sh
-2. 进入 Ubuntu：bash ~/openclaw-helper/进入Ubuntu.sh
-3. 打开仪表板：bash ~/openclaw-helper/打开仪表板.sh
-4. 重新配置 DeepSeek：bash ~/openclaw-helper/配置DeepSeek.sh
-5. 开启 token 认证：bash ~/openclaw-helper/开启Token认证.sh
-6. 关闭 token 认证：bash ~/openclaw-helper/关闭Token认证.sh
-7. 修复本地初始化：bash ~/openclaw-helper/修复本地初始化.sh
-8. 修复 Error 13 网络接口：bash ~/openclaw-helper/修复Error13网络接口.sh
+2. 打开仪表板：bash ~/openclaw-helper/打开仪表板.sh
+3. 配置 DeepSeek：bash ~/openclaw-helper/配置DeepSeek.sh
+4. 开启 token：bash ~/openclaw-helper/开启Token认证.sh
+5. 关闭 token：bash ~/openclaw-helper/关闭Token认证.sh
+6. 修复 Error13：bash ~/openclaw-helper/修复Error13网络接口.sh
+7. 进入 Ubuntu：bash ~/openclaw-helper/进入Ubuntu.sh
 
-二、本机访问地址
+二、本机地址
 http://127.0.0.1:18789/
 
-三、当前默认模型
+三、默认模型
 ${MODEL_ID}
 
 四、当前认证模式
-${LOCAL_AUTH_MODE}
-说明：为了避免首次网页认证卡住，脚本默认把本机 loopback 设置为免 token。
-如果你后面需要电脑/平板接入，请手动运行：bash ~/openclaw-helper/开启Token认证.sh
+none
 
 五、说明
 1. 如果你安装时跳过了 DeepSeek API Key，后面仍可运行：bash ~/openclaw-helper/配置DeepSeek.sh
-2. 即使跳过 API Key，脚本也会先写好本地 Gateway 基础配置，不会再卡在 Missing config
-3. 如果手机后台容易被杀，请把 Termux 的电池优化设为“不受限制”
-4. 如果网页仍然异常，优先运行：bash ~/openclaw-helper/修复本地初始化.sh
-5. 如果启动时看到 uv_interface_addresses / Unknown system error 13，可运行：bash ~/openclaw-helper/修复Error13网络接口.sh
-6. 如果浏览器之前填错过 token，请清掉 127.0.0.1:18789 的站点数据或改用无痕模式
-7. 本中文脚本版权：黑客驰 / hackerchi.top
+2. 脚本已内置 Android/PRoot 的 Error 13 网络接口兼容修复
+3. 如果手机后台容易被杀，请把 Termux 的电池优化设为"不受限制"
+4. 本中文脚本版权：黑客驰 / hackerchi.top
 EOF_README
 }
 
@@ -547,12 +472,8 @@ maybe_start_gateway() {
   read -r -p "是否现在直接启动 OpenClaw？[Y/n]：" choice
   choice="${choice:-Y}"
   case "$choice" in
-    n|N)
-      success "已跳过自动启动。稍后可运行：openclawx start"
-      ;;
-    *)
-      openclawx start
-      ;;
+    n|N) success "已跳过自动启动。稍后可运行：openclawx start" ;;
+    *) openclawx start ;;
   esac
 }
 
@@ -573,14 +494,11 @@ final_summary() {
   echo "帮助目录：${HELPER_DIR}"
   echo "说明目录：${DOCS_DIR}"
   echo "如需电脑/平板接入：bash ~/openclaw-helper/开启Token认证.sh"
-  echo "如遇 Error 13：bash ~/openclaw-helper/修复Error13网络接口.sh"
   echo "封装版权：黑客驰 / hackerchi.top"
 }
 
 main() {
   print_banner
-  check_termux
-  check_android_hint
   ask_inputs
   install_termux_packages
   configure_npm_registry
@@ -593,7 +511,13 @@ main() {
   bootstrap_local_gateway_config
   configure_deepseek_now
   set_local_no_auth_mode
-  create_helper_files
+  create_reconfigure_helper
+  create_enable_token_helper
+  create_disable_token_helper
+  create_dashboard_helper
+  create_repair_helper
+  create_misc_helpers
+  write_docs
   final_summary
   maybe_start_gateway
 }
