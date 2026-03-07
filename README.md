@@ -2,7 +2,6 @@
 
 主推脚本：`openclaw_termux_cn_installer.sh`  
 封装作者：**黑客驰 / hackerchi.top**
-
 这是一个面向 **Termux** 的 OpenClaw 中文安装脚本，目标是尽量做到：
 
 - 一条命令安装 `openclaw-termux`
