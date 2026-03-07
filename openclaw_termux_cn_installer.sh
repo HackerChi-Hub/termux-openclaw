@@ -1,13 +1,14 @@
 #!/data/data/com.termux/files/usr/bin/bash
 # ==========================================================
-# OpenClaw Termux DeepSeek 中文一键安装脚本（优化版）
+# OpenClaw Termux DeepSeek 中文一键安装脚本（修正版）
 # 主推脚本：openclaw_termux_cn_installer.sh
 # 封装作者：黑客驰 / hackerchi.top
 # 说明：
 #   1) 使用 openclaw-termux + OpenClaw 官方 onboard --non-interactive
-#   2) 默认面向“手机本机使用”，安装后免 token 直连本机网页，避免首次认证卡住
-#   3) 自动配置 DeepSeek（如提供 API Key），并显式把默认模型切到 DeepSeek
-#   4) 提供后续开启 token 认证的辅助脚本，适合需要电脑/远程接入的用户
+#   2) 无论是否填写 DeepSeek API Key，都会先写入“可启动”的本地 Gateway 基础配置
+#   3) 若提供 DeepSeek API Key，则自动接入 DeepSeek 自定义 provider 并切为默认模型
+#   4) 默认把本机 loopback 认证设为 none，优先保证手机本机先跑通
+#   5) 提供一键开启 token 认证的辅助脚本，适合后续电脑/平板接入
 # ==========================================================
 
 set -euo pipefail
@@ -29,6 +30,7 @@ ENV_FILE_HOST="${TMP_DIR}/openclaw.env"
 DEEPSEEK_API_KEY=""
 MODEL_ID="deepseek-chat"
 LOCAL_AUTH_MODE="none"
+GATEWAY_TOKEN="hc-$(head -c 12 /dev/urandom | od -An -tx1 | tr -d ' \n')"
 
 info() { echo -e "${CYAN}[信息]${NC} $*"; }
 success() { echo -e "${GREEN}[完成]${NC} $*"; }
@@ -46,7 +48,7 @@ print_banner() {
   echo -e "${BLUE}╔════════════════════════════════════════════════════════════╗${NC}"
   echo -e "${BLUE}║      OpenClaw Termux DeepSeek 中文一键安装脚本           ║${NC}"
   echo -e "${BLUE}║        官方 onboard --non-interactive 自动方案          ║${NC}"
-  echo -e "${BLUE}║          默认本机免 token 直连 · 适合中国网络           ║${NC}"
+  echo -e "${BLUE}║      先写可启动配置，再按需接入 DeepSeek / 免 token      ║${NC}"
   echo -e "${BLUE}║            封装：黑客驰 · hackerchi.top                  ║${NC}"
   echo -e "${BLUE}╚════════════════════════════════════════════════════════════╝${NC}"
   echo
@@ -68,16 +70,12 @@ check_android_hint() {
   fi
 }
 
-random_hex_64() {
-  head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n'
-}
-
 ask_inputs() {
   echo "本脚本主打：安装完后直接在手机本机打开 http://127.0.0.1:18789/ 使用。"
-  echo "为了尽量做到真正的“装完即能用”，脚本默认会把本机 loopback 认证改成无 token。"
-  echo "如果你后面要电脑/平板远程接入，可再用辅助脚本一键开启 token 认证。"
+  echo "为减少首次网页认证卡住，脚本默认把本机 loopback 认证改为 none。"
+  echo "如果你后面要电脑/平板远程接入，可再运行辅助脚本一键开启 token 认证。"
   echo
-  read -r -s -p "请输入 DeepSeek API Key（可直接回车跳过，稍后再配）：" DEEPSEEK_API_KEY
+  read -r -s -p "请输入 DeepSeek API Key（可直接回车跳过，稍后再配）：" DEEPSEEK_API_KEY || true
   echo
   echo
   echo "请选择默认模型："
@@ -138,6 +136,7 @@ prepare_env_file() {
   mkdir -p "$TMP_DIR" "$DOCS_DIR" "$HELPER_DIR"
   cat > "$ENV_FILE_HOST" <<EOF_ENV
 # OpenClaw 本地环境变量（由黑客驰 / hackerchi.top 脚本生成）
+OPENCLAW_GATEWAY_TOKEN=${GATEWAY_TOKEN}
 CUSTOM_API_KEY=${DEEPSEEK_API_KEY}
 EOF_ENV
   chmod 600 "$ENV_FILE_HOST"
@@ -156,13 +155,8 @@ configure_ubuntu_npm() {
   success "Ubuntu 内部 npm 镜像已设置。"
 }
 
-configure_deepseek_now() {
-  if [ -z "$DEEPSEEK_API_KEY" ]; then
-    warn "你刚才跳过了 DeepSeek API Key。脚本将只完成环境安装，不会现在配置 DeepSeek。"
-    return 0
-  fi
-
-  info "调用 OpenClaw 官方 onboard --non-interactive 自动写入 DeepSeek 配置……"
+bootstrap_local_gateway_config() {
+  info "先写入一个可启动的本地 Gateway 基础配置……"
   ubuntu_run "set -euo pipefail
 OPENCLAW_BIN=\$(command -v openclaw || true)
 if [ -z \"\$OPENCLAW_BIN\" ] && [ -x \"\$HOME/.openclaw/bin/openclaw\" ]; then
@@ -173,19 +167,48 @@ mkdir -p ~/.openclaw ~/.openclaw/workspace
 set -a
 [ -f ~/.openclaw/.env ] && . ~/.openclaw/.env
 set +a
-\"\$OPENCLAW_BIN\" onboard --non-interactive \\
-  --mode local \\
-  --auth-choice custom-api-key \\
-  --custom-provider-id deepseek \\
-  --custom-base-url https://api.deepseek.com/v1 \\
-  --custom-model-id ${MODEL_ID} \\
-  --custom-compatibility openai \\
-  --secret-input-mode ref \\
-  --gateway-bind loopback \\
-  --gateway-port 18789 \\
-  --gateway-auth token \\
-  --skip-channels \\
-  --skip-skills \\
+\"\$OPENCLAW_BIN\" onboard --non-interactive \
+  --mode local \
+  --auth-choice skip \
+  --gateway-auth token \
+  --gateway-token-ref-env OPENCLAW_GATEWAY_TOKEN \
+  --gateway-port 18789 \
+  --gateway-bind loopback \
+  --skip-skills \
+  --accept-risk
+\"\$OPENCLAW_BIN\" config validate"
+  success "基础配置已写入，后续即使暂时不配 DeepSeek，也不会再卡在 Missing config。"
+}
+
+configure_deepseek_now() {
+  if [ -z "$DEEPSEEK_API_KEY" ]; then
+    warn "你刚才跳过了 DeepSeek API Key。脚本已写好本地 Gateway 基础配置，稍后可再运行“配置DeepSeek.sh”。"
+    return 0
+  fi
+
+  info "调用 OpenClaw 官方 onboard --non-interactive 自动写入 DeepSeek 配置……"
+  ubuntu_run "set -euo pipefail
+OPENCLAW_BIN=\$(command -v openclaw || true)
+if [ -z \"\$OPENCLAW_BIN\" ] && [ -x \"\$HOME/.openclaw/bin/openclaw\" ]; then
+  OPENCLAW_BIN=\"\$HOME/.openclaw/bin/openclaw\"
+fi
+[ -n \"\$OPENCLAW_BIN\" ] || { echo '未找到 openclaw 主程序。'; exit 1; }
+set -a
+[ -f ~/.openclaw/.env ] && . ~/.openclaw/.env
+set +a
+\"\$OPENCLAW_BIN\" onboard --non-interactive \
+  --mode local \
+  --auth-choice custom-api-key \
+  --custom-provider-id deepseek \
+  --custom-base-url https://api.deepseek.com/v1 \
+  --custom-model-id ${MODEL_ID} \
+  --custom-compatibility openai \
+  --secret-input-mode ref \
+  --gateway-auth token \
+  --gateway-token-ref-env OPENCLAW_GATEWAY_TOKEN \
+  --gateway-port 18789 \
+  --gateway-bind loopback \
+  --skip-skills \
   --accept-risk
 \"\$OPENCLAW_BIN\" config set agents.defaults.model.primary 'deepseek/${MODEL_ID}'
 \"\$OPENCLAW_BIN\" config validate"
@@ -193,7 +216,7 @@ set +a
 }
 
 set_local_no_auth_mode() {
-  info "为保证手机本机开箱即用，正在把 loopback 认证改为无 token……"
+  info "为保证手机本机开箱即用，正在把 loopback 认证改为 none……"
   ubuntu_run "set -euo pipefail
 OPENCLAW_BIN=\$(command -v openclaw || true)
 if [ -z \"\$OPENCLAW_BIN\" ] && [ -x \"\$HOME/.openclaw/bin/openclaw\" ]; then
@@ -213,38 +236,52 @@ read -r -s -p "请输入 DeepSeek API Key：" DS_KEY
 echo
 read -r -p "请输入默认模型 [默认 deepseek-chat，可改为 deepseek-reasoner]：" DS_MODEL
 DS_MODEL="${DS_MODEL:-deepseek-chat}"
-mkdir -p "$HOME/.openclaw_cn_installer_tmp"
-cat > "$HOME/.openclaw_cn_installer_tmp/openclaw.env" <<EOF_ENV
-CUSTOM_API_KEY=${DS_KEY}
-EOF_ENV
-proot-distro login ubuntu --shared-tmp -- /bin/bash -lc "mkdir -p ~/.openclaw ~/.openclaw/workspace && cp '$HOME/.openclaw_cn_installer_tmp/openclaw.env' ~/.openclaw/.env && chmod 600 ~/.openclaw/.env"
-proot-distro login ubuntu --shared-tmp -- /bin/bash -lc "set -euo pipefail
-OPENCLAW_BIN=\$(command -v openclaw || true)
-if [ -z \"\$OPENCLAW_BIN\" ] && [ -x \"\$HOME/.openclaw/bin/openclaw\" ]; then
-  OPENCLAW_BIN=\"\$HOME/.openclaw/bin/openclaw\"
+export DS_KEY DS_MODEL
+proot-distro login ubuntu --shared-tmp -- /bin/bash -lc '
+set -euo pipefail
+ENV_FILE="$HOME/.openclaw/.env"
+mkdir -p ~/.openclaw ~/.openclaw/workspace
+touch "$ENV_FILE"
+chmod 600 "$ENV_FILE"
+python3 - <<\"PY\"
+from pathlib import Path
+import os
+p = Path(os.path.expanduser("~/.openclaw/.env"))
+lines = p.read_text().splitlines() if p.exists() else []
+vals = {}
+for line in lines:
+    if "=" in line and not line.startswith("#"):
+        k, v = line.split("=", 1)
+        vals[k] = v
+vals["CUSTOM_API_KEY"] = os.environ["DS_KEY"]
+p.write_text("\\n".join(f"{k}={v}" for k, v in vals.items()) + "\\n")
+PY
+OPENCLAW_BIN=$(command -v openclaw || true)
+if [ -z "$OPENCLAW_BIN" ] && [ -x "$HOME/.openclaw/bin/openclaw" ]; then
+  OPENCLAW_BIN="$HOME/.openclaw/bin/openclaw"
 fi
-[ -n \"\$OPENCLAW_BIN\" ] || { echo '未找到 openclaw 主程序。'; exit 1; }
+[ -n "$OPENCLAW_BIN" ] || { echo "未找到 openclaw 主程序。"; exit 1; }
 set -a
 [ -f ~/.openclaw/.env ] && . ~/.openclaw/.env
 set +a
-\"\$OPENCLAW_BIN\" onboard --non-interactive \\
-  --mode local \\
-  --auth-choice custom-api-key \\
-  --custom-provider-id deepseek \\
-  --custom-base-url https://api.deepseek.com/v1 \\
-  --custom-model-id ${DS_MODEL} \\
-  --custom-compatibility openai \\
-  --secret-input-mode ref \\
-  --gateway-bind loopback \\
-  --gateway-port 18789 \\
-  --gateway-auth token \\
-  --skip-channels \\
-  --skip-skills \\
+"$OPENCLAW_BIN" onboard --non-interactive \
+  --mode local \
+  --auth-choice custom-api-key \
+  --custom-provider-id deepseek \
+  --custom-base-url https://api.deepseek.com/v1 \
+  --custom-model-id "$DS_MODEL" \
+  --custom-compatibility openai \
+  --secret-input-mode ref \
+  --gateway-auth token \
+  --gateway-token-ref-env OPENCLAW_GATEWAY_TOKEN \
+  --gateway-port 18789 \
+  --gateway-bind loopback \
+  --skip-skills \
   --accept-risk
-\"\$OPENCLAW_BIN\" config set agents.defaults.model.primary 'deepseek/${DS_MODEL}'
-\"\$OPENCLAW_BIN\" config set gateway.auth.mode none
-\"\$OPENCLAW_BIN\" config validate"
-rm -f "$HOME/.openclaw_cn_installer_tmp/openclaw.env"
+"$OPENCLAW_BIN" config set agents.defaults.model.primary "deepseek/$DS_MODEL"
+"$OPENCLAW_BIN" config set gateway.auth.mode none
+"$OPENCLAW_BIN" config validate
+'
 echo
 echo "DeepSeek 配置完成。"
 echo "现在可以运行：openclawx start"
@@ -258,23 +295,37 @@ create_enable_token_helper() {
 set -euo pipefail
 read -r -p "请输入你要设置的网关 token（留空则自动生成一串随机 token）：" INPUT_TOKEN
 if [ -z "${INPUT_TOKEN:-}" ]; then
-  INPUT_TOKEN="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+  INPUT_TOKEN="hc-$(head -c 12 /dev/urandom | od -An -tx1 | tr -d ' \n')"
 fi
-mkdir -p "$HOME/.openclaw_cn_installer_tmp"
-cat > "$HOME/.openclaw_cn_installer_tmp/token.env" <<EOF_ENV
-OPENCLAW_GATEWAY_TOKEN=${INPUT_TOKEN}
-EOF_ENV
-proot-distro login ubuntu --shared-tmp -- /bin/bash -lc "mkdir -p ~/.openclaw && touch ~/.openclaw/.env && grep -v '^OPENCLAW_GATEWAY_TOKEN=' ~/.openclaw/.env > ~/.openclaw/.env.tmp 2>/dev/null || true && cat ~/.openclaw/.env.tmp '$HOME/.openclaw_cn_installer_tmp/token.env' > ~/.openclaw/.env && rm -f ~/.openclaw/.env.tmp && chmod 600 ~/.openclaw/.env"
-proot-distro login ubuntu --shared-tmp -- /bin/bash -lc "set -euo pipefail
-OPENCLAW_BIN=\$(command -v openclaw || true)
-if [ -z \"\$OPENCLAW_BIN\" ] && [ -x \"\$HOME/.openclaw/bin/openclaw\" ]; then
-  OPENCLAW_BIN=\"\$HOME/.openclaw/bin/openclaw\"
+export INPUT_TOKEN OPENCLAW_GATEWAY_TOKEN="$INPUT_TOKEN"
+proot-distro login ubuntu --shared-tmp -- /bin/bash -lc '
+set -euo pipefail
+ENV_FILE="$HOME/.openclaw/.env"
+mkdir -p ~/.openclaw
+touch "$ENV_FILE"
+chmod 600 "$ENV_FILE"
+python3 - <<\"PY\"
+from pathlib import Path
+import os
+p = Path(os.path.expanduser("~/.openclaw/.env"))
+lines = p.read_text().splitlines() if p.exists() else []
+vals = {}
+for line in lines:
+    if "=" in line and not line.startswith("#"):
+        k, v = line.split("=", 1)
+        vals[k] = v
+vals["OPENCLAW_GATEWAY_TOKEN"] = os.environ["INPUT_TOKEN"]
+p.write_text("\\n".join(f"{k}={v}" for k, v in vals.items()) + "\\n")
+PY
+OPENCLAW_BIN=$(command -v openclaw || true)
+if [ -z "$OPENCLAW_BIN" ] && [ -x "$HOME/.openclaw/bin/openclaw" ]; then
+  OPENCLAW_BIN="$HOME/.openclaw/bin/openclaw"
 fi
-[ -n \"\$OPENCLAW_BIN\" ] || { echo '未找到 openclaw 主程序。'; exit 1; }
-\"\$OPENCLAW_BIN\" config set gateway.auth.mode token
-\"\$OPENCLAW_BIN\" config set gateway.auth.token '\${OPENCLAW_GATEWAY_TOKEN}'
-\"\$OPENCLAW_BIN\" config validate"
-rm -f "$HOME/.openclaw_cn_installer_tmp/token.env"
+[ -n "$OPENCLAW_BIN" ] || { echo "未找到 openclaw 主程序。"; exit 1; }
+"$OPENCLAW_BIN" config set gateway.auth.mode token
+"$OPENCLAW_BIN" config set gateway.auth.token "${OPENCLAW_GATEWAY_TOKEN}"
+"$OPENCLAW_BIN" config validate
+'
 echo
 echo "已开启 token 认证。"
 echo "请在网页设置里填写 token：${INPUT_TOKEN}"
@@ -283,13 +334,81 @@ EOF_HELPER
   chmod +x "${HELPER_DIR}/开启Token认证.sh"
 }
 
+create_disable_token_helper() {
+  cat > "${HELPER_DIR}/关闭Token认证.sh" <<'EOF_HELPER'
+#!/data/data/com.termux/files/usr/bin/bash
+set -euo pipefail
+proot-distro login ubuntu --shared-tmp -- /bin/bash -lc '
+set -euo pipefail
+OPENCLAW_BIN=$(command -v openclaw || true)
+if [ -z "$OPENCLAW_BIN" ] && [ -x "$HOME/.openclaw/bin/openclaw" ]; then
+  OPENCLAW_BIN="$HOME/.openclaw/bin/openclaw"
+fi
+[ -n "$OPENCLAW_BIN" ] || { echo "未找到 openclaw 主程序。"; exit 1; }
+"$OPENCLAW_BIN" config set gateway.auth.mode none
+"$OPENCLAW_BIN" config validate
+'
+echo "已切回本机免 token 模式。"
+EOF_HELPER
+  chmod +x "${HELPER_DIR}/关闭Token认证.sh"
+}
+
 create_dashboard_helper() {
   cat > "${HELPER_DIR}/打开仪表板.sh" <<'EOF_HELPER'
 #!/data/data/com.termux/files/usr/bin/bash
 set -euo pipefail
-proot-distro login ubuntu --shared-tmp -- /bin/bash -lc "set -a; [ -f ~/.openclaw/.env ] && . ~/.openclaw/.env; set +a; openclaw dashboard"
+proot-distro login ubuntu --shared-tmp -- /bin/bash -lc '
+set -euo pipefail
+OPENCLAW_BIN=$(command -v openclaw || true)
+if [ -z "$OPENCLAW_BIN" ] && [ -x "$HOME/.openclaw/bin/openclaw" ]; then
+  OPENCLAW_BIN="$HOME/.openclaw/bin/openclaw"
+fi
+[ -n "$OPENCLAW_BIN" ] || { echo "未找到 openclaw 主程序。"; exit 1; }
+set -a
+[ -f ~/.openclaw/.env ] && . ~/.openclaw/.env
+set +a
+"$OPENCLAW_BIN" dashboard
+'
 EOF_HELPER
   chmod +x "${HELPER_DIR}/打开仪表板.sh"
+}
+
+create_repair_helper() {
+  cat > "${HELPER_DIR}/修复本地初始化.sh" <<'EOF_HELPER'
+#!/data/data/com.termux/files/usr/bin/bash
+set -euo pipefail
+proot-distro login ubuntu --shared-tmp -- /bin/bash -lc '
+set -euo pipefail
+ENV_FILE="$HOME/.openclaw/.env"
+mkdir -p ~/.openclaw ~/.openclaw/workspace
+touch "$ENV_FILE"
+chmod 600 "$ENV_FILE"
+if ! grep -q "^OPENCLAW_GATEWAY_TOKEN=" "$ENV_FILE"; then
+  echo "OPENCLAW_GATEWAY_TOKEN=hc-$(head -c 12 /dev/urandom | od -An -tx1 | tr -d \" \n\")" >> "$ENV_FILE"
+fi
+OPENCLAW_BIN=$(command -v openclaw || true)
+if [ -z "$OPENCLAW_BIN" ] && [ -x "$HOME/.openclaw/bin/openclaw" ]; then
+  OPENCLAW_BIN="$HOME/.openclaw/bin/openclaw"
+fi
+[ -n "$OPENCLAW_BIN" ] || { echo "未找到 openclaw 主程序。"; exit 1; }
+set -a
+[ -f ~/.openclaw/.env ] && . ~/.openclaw/.env
+set +a
+"$OPENCLAW_BIN" onboard --non-interactive \
+  --mode local \
+  --auth-choice skip \
+  --gateway-auth token \
+  --gateway-token-ref-env OPENCLAW_GATEWAY_TOKEN \
+  --gateway-port 18789 \
+  --gateway-bind loopback \
+  --skip-skills \
+  --accept-risk
+"$OPENCLAW_BIN" config set gateway.auth.mode none
+"$OPENCLAW_BIN" config validate
+'
+echo "本地初始化已修复。现在可以运行：openclawx start"
+EOF_HELPER
+  chmod +x "${HELPER_DIR}/修复本地初始化.sh"
 }
 
 create_helper_files() {
@@ -311,7 +430,9 @@ EOF_HELPER
   chmod +x "${HELPER_DIR}/启动OpenClaw.sh" "${HELPER_DIR}/进入Ubuntu.sh" "${HELPER_DIR}/前台启动查看日志.sh"
   create_reconfigure_helper
   create_enable_token_helper
+  create_disable_token_helper
   create_dashboard_helper
+  create_repair_helper
 
   cat > "${DOCS_DIR}/01-安装完成后先看我.txt" <<EOF_README
 OpenClaw Termux DeepSeek 中文说明
@@ -323,6 +444,8 @@ OpenClaw Termux DeepSeek 中文说明
 3. 打开仪表板：bash ~/openclaw-helper/打开仪表板.sh
 4. 重新配置 DeepSeek：bash ~/openclaw-helper/配置DeepSeek.sh
 5. 开启 token 认证：bash ~/openclaw-helper/开启Token认证.sh
+6. 关闭 token 认证：bash ~/openclaw-helper/关闭Token认证.sh
+7. 修复本地初始化：bash ~/openclaw-helper/修复本地初始化.sh
 
 二、本机访问地址
 http://127.0.0.1:18789/
@@ -336,11 +459,12 @@ ${LOCAL_AUTH_MODE}
 如果你后面需要电脑/平板接入，请手动运行：bash ~/openclaw-helper/开启Token认证.sh
 
 五、说明
-1. 如果你安装时跳过了 DeepSeek API Key，请运行：bash ~/openclaw-helper/配置DeepSeek.sh
-2. 如果手机后台容易被杀，请把 Termux 的电池优化设为“不受限制”
-3. 如果网页仍然异常，优先运行：bash ~/openclaw-helper/打开仪表板.sh
-4. 如果浏览器之前填错过 token，请清掉 127.0.0.1:18789 的站点数据或改用无痕模式
-5. 本中文脚本版权：黑客驰 / hackerchi.top
+1. 如果你安装时跳过了 DeepSeek API Key，后面仍可运行：bash ~/openclaw-helper/配置DeepSeek.sh
+2. 即使跳过 API Key，脚本也会先写好本地 Gateway 基础配置，不会再卡在 Missing config
+3. 如果手机后台容易被杀，请把 Termux 的电池优化设为“不受限制”
+4. 如果网页仍然异常，优先运行：bash ~/openclaw-helper/修复本地初始化.sh
+5. 如果浏览器之前填错过 token，请清掉 127.0.0.1:18789 的站点数据或改用无痕模式
+6. 本中文脚本版权：黑客驰 / hackerchi.top
 EOF_README
 }
 
@@ -390,6 +514,7 @@ main() {
   prepare_env_file
   copy_env_into_ubuntu
   configure_ubuntu_npm
+  bootstrap_local_gateway_config
   configure_deepseek_now
   set_local_no_auth_mode
   create_helper_files
