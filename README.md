@@ -30,7 +30,7 @@
 ### 方式一：克隆仓库后运行
 
 ```bash
-pkg update -y && pkg install -y git && git clone https://gitee.com/hyphentech/openclaw-Termux.git && cd openclaw-Termux && chmod +x openclaw_termux_cn_installer.sh && bash openclaw_termux_cn_installer.sh
+termux-setup-storage && pkg update -y && pkg install -y git && git clone https://gitee.com/hyphentech/openclaw-Termux.git && cd openclaw-Termux && chmod +x openclaw_termux_cn_installer.sh && bash openclaw_termux_cn_installer.sh
 ```
 
 ### 方式二：如果脚本在下载目录
