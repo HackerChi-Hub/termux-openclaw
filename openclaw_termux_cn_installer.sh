@@ -170,8 +170,6 @@ set +a
 \"\$OPENCLAW_BIN\" onboard --non-interactive \
   --mode local \
   --auth-choice skip \
-  --gateway-auth token \
-  --gateway-token-ref-env OPENCLAW_GATEWAY_TOKEN \
   --gateway-port 18789 \
   --gateway-bind loopback \
   --skip-skills \
@@ -204,8 +202,6 @@ set +a
   --custom-model-id ${MODEL_ID} \
   --custom-compatibility openai \
   --secret-input-mode ref \
-  --gateway-auth token \
-  --gateway-token-ref-env OPENCLAW_GATEWAY_TOKEN \
   --gateway-port 18789 \
   --gateway-bind loopback \
   --skip-skills \
@@ -272,8 +268,6 @@ set +a
   --custom-model-id "$DS_MODEL" \
   --custom-compatibility openai \
   --secret-input-mode ref \
-  --gateway-auth token \
-  --gateway-token-ref-env OPENCLAW_GATEWAY_TOKEN \
   --gateway-port 18789 \
   --gateway-bind loopback \
   --skip-skills \
@@ -397,8 +391,6 @@ set +a
 "$OPENCLAW_BIN" onboard --non-interactive \
   --mode local \
   --auth-choice skip \
-  --gateway-auth token \
-  --gateway-token-ref-env OPENCLAW_GATEWAY_TOKEN \
   --gateway-port 18789 \
   --gateway-bind loopback \
   --skip-skills \
