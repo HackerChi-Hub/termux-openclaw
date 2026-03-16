@@ -19,10 +19,17 @@ TERMUX_TMP="${TMPDIR:-/data/data/com.termux/files/usr/tmp}"
 DEEPSEEK_API_KEY=""
 MODEL_ID="deepseek-chat"
 
-info() { echo -e "${CYAN}[信息]${NC} $*"; }
+# GitHub 代理列表（按优先级排列，全失败才裸连）
+GH_PROXIES=(
+  "https://ghproxy.net"
+  "https://mirror.ghproxy.com"
+  "https://gh-proxy.com"
+)
+
+info()    { echo -e "${CYAN}[信息]${NC} $*"; }
 success() { echo -e "${GREEN}[完成]${NC} $*"; }
-warn() { echo -e "${YELLOW}[提醒]${NC} $*"; }
-die() { echo -e "${RED}[错误]${NC} $*"; exit 1; }
+warn()    { echo -e "${YELLOW}[提醒]${NC} $*"; }
+die()     { echo -e "${RED}[错误]${NC} $*"; exit 1; }
 cleanup() { rm -rf "$TMP_DIR" 2>/dev/null || true; }
 trap cleanup EXIT
 
@@ -31,7 +38,7 @@ print_banner() {
   echo -e "${BLUE}╔════════════════════════════════════════════════════════════╗${NC}"
   echo -e "${BLUE}║      OpenClaw Termux DeepSeek 中文一键安装脚本           ║${NC}"
   echo -e "${BLUE}║     兼容旧 CLI · 免 token 本机模式 · 内置 Error13 修复   ║${NC}"
-  echo -e "${BLUE}║            封装：黑客驰 · hackerchi.top                  ║${NC}"
+  echo -e "${BLUE}║         国内加速版 · 封装：黑客驰 · hackerchi.top        ║${NC}"
   echo -e "${BLUE}╚════════════════════════════════════════════════════════════╝${NC}"
   echo
 }
@@ -56,6 +63,26 @@ ask_inputs() {
     2) MODEL_ID="deepseek-reasoner" ;;
     *) warn "无效选择，已改用默认模型 deepseek-chat。"; MODEL_ID="deepseek-chat" ;;
   esac
+}
+
+# ────────────────────────────────────────────────────────────
+# 新增：切换 Termux apt 源为国内镜像（TUNA）
+# ────────────────────────────────────────────────────────────
+configure_termux_mirror() {
+  info "切换 Termux 软件源为 TUNA 国内镜像……"
+  local sources_list="${PREFIX}/etc/apt/sources.list"
+  if [ ! -f "$sources_list" ]; then
+    warn "未找到 ${sources_list}，跳过 Termux 源切换。"
+    return 0
+  fi
+  # 备份原始源文件
+  cp "$sources_list" "${sources_list}.bak" 2>/dev/null || true
+  # 替换官方源地址
+  sed -i \
+    -e 's|https\?://packages\.termux\.org|https://mirrors.tuna.tsinghua.edu.cn/termux|g' \
+    -e 's|https\?://termux\.net|https://mirrors.tuna.tsinghua.edu.cn/termux|g' \
+    "$sources_list" 2>/dev/null || true
+  success "Termux 源已切换至 TUNA（备份：${sources_list}.bak）。"
 }
 
 install_termux_packages() {
@@ -86,8 +113,62 @@ install_openclaw_termux() {
   command -v openclawx >/dev/null 2>&1 || die "未找到 openclawx，安装似乎没有成功。"
 }
 
+# ────────────────────────────────────────────────────────────
+# 新增：预安装 Ubuntu rootfs（通过 GitHub 代理加速，规避直连超时）
+# openclawx setup 检测到已安装会跳过下载，只走后续配置。
+# ────────────────────────────────────────────────────────────
+preinstall_ubuntu_rootfs() {
+  local ubuntu_fs="${PREFIX}/var/lib/proot-distro/installed-rootfs/ubuntu"
+  if [ -d "$ubuntu_fs" ]; then
+    info "检测到 Ubuntu rootfs 已存在，跳过下载。"
+    return 0
+  fi
+
+  info "Ubuntu rootfs 尚未安装，开始通过国内代理下载……"
+  info "（此步骤从 GitHub Releases 下载，在国内可能较慢，请耐心等候）"
+
+  local distro_file="${PREFIX}/etc/proot-distro/ubuntu.sh"
+  if [ ! -f "$distro_file" ]; then
+    warn "未找到 proot-distro ubuntu.sh，跳过代理补丁，直接尝试安装。"
+    proot-distro install ubuntu || die "Ubuntu rootfs 下载失败，请检查网络后重试。"
+    return 0
+  fi
+
+  # 备份原始 distro 文件
+  cp "$distro_file" "${distro_file}.bak"
+
+  local installed=false
+  for proxy in "${GH_PROXIES[@]}"; do
+    info "尝试代理：${proxy} ……"
+    # 将 distro 文件里的 GitHub URL 替换为代理前缀
+    sed \
+      -e "s|https://github\.com|${proxy}/https://github.com|g" \
+      -e "s|https://objects\.githubusercontent\.com|${proxy}/https://objects.githubusercontent.com|g" \
+      "${distro_file}.bak" > "$distro_file"
+
+    if proot-distro install ubuntu; then
+      success "Ubuntu rootfs 安装成功（代理：${proxy}）。"
+      installed=true
+      break
+    else
+      warn "代理 ${proxy} 失败，尝试下一个……"
+      # 还原，准备下一次循环
+      cp "${distro_file}.bak" "$distro_file"
+    fi
+  done
+
+  # 无论成功与否，都还原原始 distro 文件
+  cp "${distro_file}.bak" "$distro_file"
+  rm -f "${distro_file}.bak"
+
+  if [ "$installed" = false ]; then
+    warn "所有代理均失败，将尝试直连 GitHub（若网络不佳可能超时）……"
+    proot-distro install ubuntu || die "Ubuntu rootfs 下载失败。请配置代理后重新运行脚本。"
+  fi
+}
+
 run_openclawx_setup() {
-  info "执行 openclawx setup。这个阶段会安装 Ubuntu、Node.js 和 OpenClaw。"
+  info "执行 openclawx setup。Ubuntu 已预装，此步骤仅完成 Node.js / OpenClaw 等内部配置。"
   openclawx setup
   success "openclawx setup 已完成。"
 }
@@ -148,7 +229,8 @@ copy_env_into_ubuntu() {
   info "写入 Ubuntu 内部的 ~/.openclaw/.env ……"
   ubuntu_run "mkdir -p ~/.openclaw ~/.openclaw/workspace"
   cp "$ENV_FILE_HOST" "$TERMUX_TMP/openclaw.env"
-  proot-distro login ubuntu --shared-tmp -- /bin/bash -lc 'mkdir -p ~/.openclaw ~/.openclaw/workspace && cp /tmp/openclaw.env ~/.openclaw/.env && chmod 600 ~/.openclaw/.env'
+  proot-distro login ubuntu --shared-tmp -- /bin/bash -lc \
+    'mkdir -p ~/.openclaw ~/.openclaw/workspace && cp /tmp/openclaw.env ~/.openclaw/.env && chmod 600 ~/.openclaw/.env'
   rm -f "$TERMUX_TMP/openclaw.env"
   success "环境变量文件已写入 Ubuntu：~/.openclaw/.env"
 }
@@ -241,7 +323,7 @@ create_reconfigure_helper() {
 set -euo pipefail
 TERMUX_TMP="${TMPDIR:-/data/data/com.termux/files/usr/tmp}"
 read -r -s -p "请输入 DeepSeek API Key：" DS_KEY
- echo
+echo
 read -r -p "请输入默认模型 [默认 deepseek-chat，可改为 deepseek-reasoner]：" DS_MODEL
 DS_MODEL="${DS_MODEL:-deepseek-chat}"
 cat > "$TERMUX_TMP/openclaw_ds_reconfig.sh" <<EOF_INNER
@@ -438,7 +520,7 @@ EOF_HELPER
 
 write_docs() {
   cat > "${DOCS_DIR}/01-安装完成后先看我.txt" <<EOF_README
-OpenClaw Termux DeepSeek 中文说明
+OpenClaw Termux DeepSeek 中文说明（国内加速版）
 封装：黑客驰 / hackerchi.top
 
 一、最常用命令
@@ -457,13 +539,15 @@ http://127.0.0.1:18789/
 ${MODEL_ID}
 
 四、当前认证模式
-none
+none（仅本机可访问，如需电脑/平板接入，请运行"开启Token认证.sh"）
 
 五、说明
 1. 如果你安装时跳过了 DeepSeek API Key，后面仍可运行：bash ~/openclaw-helper/配置DeepSeek.sh
 2. 脚本已内置 Android/PRoot 的 Error 13 网络接口兼容修复
-3. 如果手机后台容易被杀，请把 Termux 的电池优化设为"不受限制"
-4. 本中文脚本版权：黑客驰 / hackerchi.top
+3. 脚本已自动将 Termux 源切换为 TUNA，npm 使用 npmmirror 加速
+4. Ubuntu rootfs 下载会依次尝试三个 GitHub 代理，若均失败会裸连 GitHub
+5. 如果手机后台容易被杀，请把 Termux 的电池优化设为"不受限制"
+6. 本中文脚本版权：黑客驰 / hackerchi.top
 EOF_README
 }
 
@@ -485,6 +569,8 @@ final_summary() {
   echo "默认模型：${MODEL_ID}"
   echo "本机地址：http://127.0.0.1:18789/"
   echo "本机认证：免 token（仅适合本机使用）"
+  echo "Termux 源：TUNA 国内镜像"
+  echo "npm 源：npmmirror 国内镜像"
   if [ -n "$DEEPSEEK_API_KEY" ]; then
     echo "DeepSeek：已自动配置完成"
   else
@@ -500,9 +586,11 @@ final_summary() {
 main() {
   print_banner
   ask_inputs
+  configure_termux_mirror       # ← 新增：切换 Termux 源
   install_termux_packages
   configure_npm_registry
   install_openclaw_termux
+  preinstall_ubuntu_rootfs      # ← 新增：代理加速下载 Ubuntu rootfs
   run_openclawx_setup
   install_android_network_fix
   prepare_env_file
